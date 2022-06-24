@@ -1,8 +1,10 @@
 """Read and write atomic models in various formats."""
 
+import itertools
 import os
 
 import gemmi
+import numpy as np
 
 
 def read_atomic_model(path, i_model=0, clean=True, assemble=True):
@@ -148,6 +150,83 @@ def clean_gemmi_structure(structure=None):
     return structure
 
 
+def extract_gemmi_atoms(model, chains=None, split_chains=False):
+    """
+    Extract Gemmi atoms from the input Gemmi model, separated by chain.
+
+    Parameters
+    ----------
+    model : Gemmi Class
+        Gemmi model
+    chains : list of strings
+        chains to select, optional.
+        If not provided, retrieve atoms from all chains.
+    split_chains : bool
+        Optional, default: False
+        if True, keep the atoms from different chains in separate lists
+
+    Returns
+    -------
+    atoms : list (or list of list(s)) of Gemmi atoms
+        Gemmi atom objects, either concatenated or separated by chain
+    """
+    if chains is None:
+        chains = [ch.name for ch in model]
+
+    atoms = []
+    for ch in model:
+        if ch.name in chains:
+            atoms.append([at for res in ch for at in res])
+
+    if not split_chains:
+        atoms = list(itertools.chain.from_iterable(atoms))
+
+    return atoms
+
+
+def extract_atomic_parameter(atoms, parameter_type, split_chains=False):
+    """
+    Interpret Gemmi atoms and extract a single parameter type.
+
+    Parameters
+    ----------
+    atoms : list (of list(s)) of Gemmi atoms
+        Gemmi atom objects associated with each chain
+    parameter_type : string
+        'cartesian_coordinates', 'form_factor_a', or 'form_factor_b'
+    split_chains : bool
+        Optional, default: False
+        if True, keep the atoms from different chains in separate lists
+
+    Returns
+    -------
+    atomic_parameter : list of floats, or list of lists of floats
+        atomic parameter associated with each atom, optionally split by chain
+    """
+    # if list of Gemmi atoms, convert into a list of list
+    if type(atoms[0]) != list:
+        atoms = [atoms]
+
+    if parameter_type == "cartesian_coordinates":
+        atomic_parameter = [at.pos.tolist() for ch in atoms for at in ch]
+    elif parameter_type == "electron_form_factor_a":
+        atomic_parameter = [at.element.c4322.a for ch in atoms for at in ch]
+    elif parameter_type == "electron_form_factor_b":
+        atomic_parameter = [at.element.c4322.b for ch in atoms for at in ch]
+    else:
+        raise ValueError("Atomic parameter type not recognized.")
+
+    # optionally preserve the list of lists (separated by chain) structure
+    if split_chains:
+        reshape = [0] + [len(ch) for ch in atoms]
+        atomic_parameter = [
+            atomic_parameter[reshape[i] : reshape[i] + reshape[i + 1]]
+            for i in range(len(reshape) - 1)
+        ]
+
+    return atomic_parameter
+
+
 def write_atomic_model(path, model=gemmi.Model("model")):
     """Write Gemmi model to PDB or mmCIF file.
 
@@ -175,6 +254,54 @@ def write_atomic_model(path, model=gemmi.Model("model")):
     structure = gemmi.Structure()
     structure.add_model(model, pos=-1)
     structure.renumber_models()
+
+    if is_cif:
+        structure.make_mmcif_document().write_file(path)
+    if is_pdb:
+        structure.write_pdb(path)
+
+
+def write_cartesian_coordinates(path, cartesian_coordinates_np=np.random.rand(10, 3)):
+    """Write Numpy array of cartesian coordinates to PDB or mmCIF file.
+
+    Parameters
+    ----------
+    path : string
+        Path to PDB or mmCIF file
+    cartesian_coordinates_np : numpy array
+        Optional, default: np.random.rand(10,3)
+        Second axis must be of dimension 3.
+
+    -------
+
+    """
+    is_pdb = path.lower().endswith(".pdb")
+    is_cif = path.lower().endswith(".cif")
+    if not (is_pdb or is_cif):
+        raise ValueError("File format not recognized.")
+
+    if cartesian_coordinates_np.shape[1] != 3:
+        raise ValueError(
+            "Numpy array of cartesian coordinates should be of shape (Natom, 3)."
+        )
+
+    structure = gemmi.Structure()
+    structure.add_model(gemmi.Model("model"))
+    structure.renumber_models()
+    structure[0].add_chain("A")
+    residue = gemmi.Residue()
+    residue.name = "GLY"
+    structure[0]["A"].add_residue(residue)
+
+    for iat in np.arange(cartesian_coordinates_np.shape[0]):
+        atom = gemmi.Atom()
+        atom.pos = gemmi.Position(
+            cartesian_coordinates_np[iat, 0],
+            cartesian_coordinates_np[iat, 1],
+            cartesian_coordinates_np[iat, 2],
+        )
+        atom.name = "CA"
+        structure[0]["A"][0].add_atom(atom)
 
     if is_cif:
         structure.make_mmcif_document().write_file(path)
